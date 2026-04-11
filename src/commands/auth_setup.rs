@@ -20,7 +20,7 @@ pub fn run_with_io(
     writeln!(output, "Jira Plugin Auth Setup")?;
     writeln!(output, "1) PAT (Personal Access Token)")?;
     writeln!(output, "2) OAuth 2.0 (Atlassian Cloud)")?;
-    writeln!(output, "3) device auth(SAML device helper)")?;
+    writeln!(output, "3) Device Auth (local SAML helper binary)")?;
     write!(output, "Choose auth method [1-3]: ")?;
     output.flush()?;
 
@@ -57,7 +57,7 @@ pub fn run_with_io(
     let config = build_config(&url, &method, server_type_str)?;
 
     // For PAT, we can route IO through directly.
-    // For OAuth and device auth, they use their own IO (browser, device authbinary).
+    // For OAuth and device_auth, they use their own IO.
     match method {
         AuthMethod::Pat => {
             let pat = PatAuth::new(config);

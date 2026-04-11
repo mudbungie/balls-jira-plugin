@@ -1,5 +1,5 @@
-pub mod oauth;
 pub mod device_auth;
+pub mod oauth;
 pub mod pat;
 pub mod saml;
 pub mod tokens;
@@ -25,7 +25,9 @@ pub fn create_provider(config: &PluginConfig) -> Box<dyn AuthProvider> {
     match config.auth_method {
         AuthMethod::Pat => Box::new(pat::PatAuth::new(config.clone())),
         AuthMethod::Oauth => Box::new(oauth::OAuthAuth::new(config.clone())),
-        AuthMethod::DeviceAuth => Box::new(device_auth::DeviceAuth::new(config.clone())),
+        AuthMethod::DeviceAuth => {
+            Box::new(device_auth::DeviceAuth::new(config.clone()))
+        }
     }
 }
 
@@ -78,21 +80,17 @@ mod tests {
 
     #[test]
     fn create_provider_pat() {
-        let p = create_provider(&make_config("pat"));
-        // Just verify it doesn't panic
-        let _ = p;
+        let _ = create_provider(&make_config("pat"));
     }
 
     #[test]
     fn create_provider_oauth() {
-        let p = create_provider(&make_config("oauth"));
-        let _ = p;
+        let _ = create_provider(&make_config("oauth"));
     }
 
     #[test]
-    fn create_provider_oul() {
-        let p = create_provider(&make_config("device_auth"));
-        let _ = p;
+    fn create_provider_device_auth() {
+        let _ = create_provider(&make_config("device_auth"));
     }
 
     #[test]
@@ -124,7 +122,6 @@ mod tests {
             r#"{"auth_method":"magic"}"#,
         )
         .unwrap();
-        let err = load_auth_meta(dir.path());
-        assert!(err.is_err());
+        assert!(load_auth_meta(dir.path()).is_err());
     }
 }
