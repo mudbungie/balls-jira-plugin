@@ -104,13 +104,16 @@ mod tests {
             "sync_filter": "project = PROJ AND assignee = me",
             "create_in_remote": false,
             "close_in_remote": false,
-            "device_auth_helper_path": "/usr/local/bin/device_auth"
+            "device_auth_helper_path": "/usr/local/bin/auth-helper"
         }"#;
         let cfg: PluginConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.auth_method, AuthMethod::DeviceAuth);
         assert_eq!(cfg.server_type, ServerType::Server);
         assert!(!cfg.create_in_remote);
-        assert_eq!(cfg.device_auth_helper_path.as_deref(), Some("/usr/local/bin/device_auth"));
+        assert_eq!(
+            cfg.device_auth_helper_path.as_deref(),
+            Some("/usr/local/bin/auth-helper")
+        );
     }
 
     #[test]

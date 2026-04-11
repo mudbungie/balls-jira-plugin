@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// Encode a JSON value using the device authnative messaging wire protocol:
+/// Encode a JSON value using the native messaging wire protocol:
 /// 4-byte little-endian length prefix + JSON bytes.
 pub fn encode_native_message(value: &serde_json::Value) -> Vec<u8> {
     let json = serde_json::to_vec(value).expect("serialize json");
@@ -18,28 +18,28 @@ pub fn encode_native_message(value: &serde_json::Value) -> Vec<u8> {
 /// Decode a native messaging response: 4-byte LE length + JSON.
 pub fn decode_native_message(data: &[u8]) -> Result<serde_json::Value> {
     if data.len() < 4 {
-        return Err(PluginError::Auth("device auth response too short".into()));
+        return Err(PluginError::Auth("helper response too short".into()));
     }
     let len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
     if data.len() < 4 + len {
         return Err(PluginError::Auth(format!(
-            "device auth response truncated: expected {} bytes, got {}",
+            "helper response truncated: expected {} bytes, got {}",
             len,
             data.len() - 4
         )));
     }
     serde_json::from_slice(&data[4..4 + len])
-        .map_err(|e| PluginError::Auth(format!("device auth response JSON: {}", e)))
+        .map_err(|e| PluginError::Auth(format!("helper response JSON: {}", e)))
 }
 
-/// Send a request to the device auth helper binary and read the response.
+/// Send a request to the helper helper binary and read the response.
 pub fn call_helper(helper_path: &Path, request: &serde_json::Value) -> Result<serde_json::Value> {
     let mut child = Command::new(helper_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| PluginError::Auth(format!("spawn device auth helper: {}", e)))?;
+        .map_err(|e| PluginError::Auth(format!("spawn helper helper: {}", e)))?;
 
     let encoded = encode_native_message(request);
     if let Some(stdin) = child.stdin.as_mut() {
@@ -50,12 +50,12 @@ pub fn call_helper(helper_path: &Path, request: &serde_json::Value) -> Result<se
     let output = child.wait_with_output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(PluginError::Auth(format!("device auth helper failed: {}", stderr)));
+        return Err(PluginError::Auth(format!("helper helper failed: {}", stderr)));
     }
     decode_native_message(&output.stdout)
 }
 
-/// Parse session cookies from the device auth helper response.
+/// Parse session cookies from the helper helper response.
 /// Format: newline-delimited "key=value" pairs.
 pub fn parse_session_cookies(raw: &str) -> Vec<SessionCookie> {
     raw.lines()
@@ -75,7 +75,7 @@ pub fn parse_login_form(html: &str) -> Result<(String, String, Option<String>)> 
     parse_saml_form(html, "SAMLRequest")
 }
 
-/// Parse SAML response form (step 4 of device authflow).
+/// Parse SAML response form from the IdP redirect page.
 pub fn parse_saml_response_form(html: &str) -> Result<(String, String, Option<String>)> {
     parse_saml_form(html, "SAMLResponse")
 }
@@ -148,10 +148,10 @@ mod tests {
 
     #[test]
     fn parse_cookies() {
-        let raw = "SSO_SESSION_1=abc\nJSESSIONID=xyz\n";
+        let raw = "SSO_SESSION=abc\nJSESSIONID=xyz\n";
         let cookies = parse_session_cookies(raw);
         assert_eq!(cookies.len(), 2);
-        assert_eq!(cookies[0].name, "SSO_SESSION_1");
+        assert_eq!(cookies[0].name, "SSO_SESSION");
         assert_eq!(cookies[1].name, "JSESSIONID");
     }
 

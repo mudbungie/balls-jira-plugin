@@ -80,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_oul_session() {
+    fn roundtrip_device_session() {
         let dir = tempfile::tempdir().unwrap();
         let session = DeviceSession {
             cookies: vec![SessionCookie {

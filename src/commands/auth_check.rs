@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    fn minimal_config_oul() {
+    fn minimal_config_device_auth() {
         let cfg = minimal_config(&AuthMethod::DeviceAuth);
         assert_eq!(cfg.auth_method, AuthMethod::DeviceAuth);
     }

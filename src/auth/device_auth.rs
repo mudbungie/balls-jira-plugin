@@ -17,28 +17,22 @@ impl DeviceAuth {
     }
 
     fn helper_path(&self) -> Result<PathBuf> {
-        if let Some(p) = &self.config.device_auth_helper_path {
-            let path = PathBuf::from(p);
-            if path.exists() {
-                return Ok(path);
+        match &self.config.device_auth_helper_path {
+            Some(p) => {
+                let path = PathBuf::from(p);
+                if path.exists() {
+                    Ok(path)
+                } else {
+                    Err(PluginError::Auth(format!(
+                        "device auth helper not found at configured path: {}",
+                        p
+                    )))
+                }
             }
-            return Err(PluginError::Auth(format!(
-                "device auth helper not found at configured path: {}",
-                p
-            )));
+            None => Err(PluginError::Auth(
+                "device_auth_helper_path must be set in plugin config".into(),
+            )),
         }
-        for candidate in &[
-            "/opt/local/auth-helper",
-            "/Applications/LocalAuth.app/Contents/MacOS/auth-helper",
-        ] {
-            let path = PathBuf::from(candidate);
-            if path.exists() {
-                return Ok(path);
-            }
-        }
-        Err(PluginError::Auth(
-            "device auth helper not found. Install SAML device helper or set device_auth_helper_path".into(),
-        ))
     }
 }
 
@@ -60,7 +54,7 @@ impl AuthProvider for DeviceAuth {
         let (action, saml_request, relay_state) = saml::parse_login_form(&html)?;
         let idp_host = saml::extract_host(&action)?;
 
-        // Step 2: Get device-signed credentials
+        // Step 2: Get device-signed credentials from local helper binary
         let now = Utc::now().format("%a, %d %b %Y %H:%M:%S %z").to_string();
         let signing_string = format!("date: {}\nhost: {}", now, idp_host);
         let request = serde_json::json!({
@@ -72,14 +66,14 @@ impl AuthProvider for DeviceAuth {
         let response = saml::call_helper(&helper, &request)?;
         let device_token = response["deviceToken"]
             .as_str()
-            .ok_or_else(|| PluginError::Auth("no deviceToken".into()))?;
+            .ok_or_else(|| PluginError::Auth("no deviceToken in helper response".into()))?;
         let signature = response["signature"]
             .as_str()
-            .ok_or_else(|| PluginError::Auth("no signature".into()))?;
+            .ok_or_else(|| PluginError::Auth("no signature in helper response".into()))?;
         let seed_cookies_raw = response["sessionCookie"].as_str().unwrap_or("");
         let seed_cookies = saml::parse_session_cookies(seed_cookies_raw);
 
-        // Step 3: POST to IdP
+        // Step 3: POST to IdP with signed credentials
         let auth_header = format!(
             "Signature keyId=\"{}\",version=\"1\",algorithm=\"rsa-sha256\",\
              headers=\"date host\",signature=\"{}\"",
@@ -106,13 +100,13 @@ impl AuthProvider for DeviceAuth {
             .ok_or_else(|| PluginError::Auth("no redirect from IdP".into()))?
             .to_string();
 
-        // Step 4: Follow redirect with filtered cookies (SSO_SESSION_* only)
+        // Step 4: Follow redirect
         let redirect_resp = client.get(&redirect_url).send()?;
         let redirect_html = redirect_resp.text()?;
         let (consumer_url, saml_response, relay_state2) =
             saml::parse_saml_response_form(&redirect_html)?;
 
-        // Step 5: Complete handshake
+        // Step 5: Complete SAML handshake
         let mut final_form = vec![("SAMLResponse", saml_response)];
         if let Some(rs) = &relay_state2 {
             final_form.push(("RelayState", rs.clone()));
@@ -139,7 +133,7 @@ impl AuthProvider for DeviceAuth {
         };
         tokens::save_json(auth_dir, "session.json", &session)?;
         super::save_auth_meta(auth_dir, &crate::config::AuthMethod::DeviceAuth)?;
-        eprintln!("device auth session established.");
+        eprintln!("Device auth session established.");
         Ok(())
     }
 
@@ -164,11 +158,13 @@ impl AuthProvider for DeviceAuth {
 mod tests {
     use super::*;
 
+    fn device_auth_config() -> &'static str {
+        r#"{"url":"https://x","project":"X","auth_method":"device_auth"}"#
+    }
+
     #[test]
     fn check_missing_session() {
-        let cfg: PluginConfig =
-            serde_json::from_str(r#"{"url":"https://x","project":"X","auth_method":"device_auth"}"#)
-                .unwrap();
+        let cfg: PluginConfig = serde_json::from_str(device_auth_config()).unwrap();
         let auth = DeviceAuth::new(cfg);
         let dir = tempfile::tempdir().unwrap();
         assert!(auth.check(dir.path()).is_err());
@@ -176,9 +172,7 @@ mod tests {
 
     #[test]
     fn authenticate_adds_cookies() {
-        let cfg: PluginConfig =
-            serde_json::from_str(r#"{"url":"https://x","project":"X","auth_method":"device_auth"}"#)
-                .unwrap();
+        let cfg: PluginConfig = serde_json::from_str(device_auth_config()).unwrap();
         let auth = DeviceAuth::new(cfg);
         let dir = tempfile::tempdir().unwrap();
         let session = DeviceSession {
@@ -199,12 +193,11 @@ mod tests {
     }
 
     #[test]
-    fn helper_path_not_found() {
-        let cfg: PluginConfig =
-            serde_json::from_str(r#"{"url":"https://x","project":"X","auth_method":"device_auth"}"#)
-                .unwrap();
+    fn helper_path_not_configured() {
+        let cfg: PluginConfig = serde_json::from_str(device_auth_config()).unwrap();
         let auth = DeviceAuth::new(cfg);
-        assert!(auth.helper_path().is_err());
+        let err = auth.helper_path().unwrap_err();
+        assert!(err.to_string().contains("device_auth_helper_path"));
     }
 
     #[test]

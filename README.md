@@ -8,7 +8,7 @@ Provides bidirectional sync between balls tasks and Jira issues, supporting both
 
 - **PAT** — Personal Access Token. Works with both Cloud and Server.
 - **OAuth 2.0** — Browser-based OAuth with PKCE. Cloud only.
-- **device auth** — SAML device helper. Device-cert SAML flow for Jira instances behind LocalAuth SSO.
+- **Device Auth** — SAML authentication via a local helper binary. For Jira instances behind corporate SSO where the org provides a device-certificate signing tool.
 
 ## Install
 
@@ -77,8 +77,14 @@ balls-plugin-jira auth-setup --auth-dir .balls/local/plugins/jira/
 | `sync_filter` | `project = {key} AND status != Done` | JQL for sync |
 | `create_in_remote` | `true` | Create Jira issues on `bl create` |
 | `close_in_remote` | `true` | Transition Jira issues on `bl close` |
-| `oauth_client_id` | — | Required for OAuth auth method |
-| `device_auth_helper_path` | (auto-detected) | Path to device auth helper binary |
+| `oauth_client_id` | -- | Required for OAuth auth method |
+| `device_auth_helper_path` | (required for device_auth) | Path to SAML helper binary |
+
+### Device Auth
+
+The `device_auth` method supports environments where a local helper binary handles device-certificate-based SAML authentication. The helper binary communicates via a native messaging protocol (4-byte LE length prefix + JSON on stdin/stdout).
+
+The helper must respond to a `getAuthData` operation and return `deviceToken`, `signature`, and `sessionCookie` fields. Set `device_auth_helper_path` in the plugin config to point to your organization's helper binary.
 
 ## Development
 
