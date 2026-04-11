@@ -1,0 +1,22 @@
+{
+  "id": "bl-adc8",
+  "title": "Auto-discover Jira field mappings and remove bd artifacts",
+  "type": "task",
+  "priority": 1,
+  "status": "open",
+  "parent": null,
+  "depends_on": [],
+  "description": "Query Jira API for statuses, priorities, and issue types instead of hardcoding defaults. Clean bd from repo. Make config re-runnable (no special first run).",
+  "created_at": "2026-04-11T23:30:23.942039772Z",
+  "updated_at": "2026-04-11T23:30:23.942039772Z",
+  "closed_at": null,
+  "claimed_by": null,
+  "branch": null,
+  "tags": [
+    "autodiscovery"
+  ],
+  "notes": [],
+  "links": [],
+  "closed_children": [],
+  "external": {}
+}
