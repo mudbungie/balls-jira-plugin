@@ -3,3 +3,7 @@
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+# bd worktree
+genericize-auth/
+.balls/local
+.balls-worktrees
