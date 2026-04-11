@@ -1,0 +1,30 @@
+[package]
+name = "balls-plugin-jira"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "balls-plugin-jira"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+open = "5"
+rand = "0.8"
+reqwest = { version = "0.12", features = ["blocking", "json", "cookies"] }
+rpassword = "7"
+scraper = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tiny_http = "0.12"
+url = "2"
+
+[dev-dependencies]
+assert_cmd = "2"
+mockito = "1"
+predicates = "3"
+tempfile = "3"
