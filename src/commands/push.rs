@@ -2,6 +2,7 @@ use crate::auth;
 use crate::config::PluginConfig;
 use crate::error::Result;
 use crate::jira::client::JiraClient;
+use crate::jira::discover::DiscoveredMappings;
 use crate::jira::types::{CreateFields, UpdateFields};
 use crate::mapping;
 use crate::types::{PushResponse, Task};
@@ -13,13 +14,14 @@ use std::path::Path;
 pub fn run(task_id: &str, config_path: &Path, auth_dir: &Path) -> Result<()> {
     let config = PluginConfig::load(config_path)?;
     let provider = auth::create_provider(&config);
-    let client = JiraClient::new(config.clone(), provider.as_ref(), auth_dir);
+    let mut client = JiraClient::new(config.clone(), provider.as_ref(), auth_dir);
+    let discovered = client.discover();
 
     let mut stdin_buf = String::new();
     std::io::stdin().read_to_string(&mut stdin_buf)?;
     let task: Task = serde_json::from_str(&stdin_buf)?;
 
-    let response = push_task(&client, &config, &task, task_id)?;
+    let response = push_task(&client, &config, &discovered, &task, task_id)?;
     if let Some(resp) = response {
         println!("{}", serde_json::to_string(&resp)?);
     }
@@ -29,24 +31,21 @@ pub fn run(task_id: &str, config_path: &Path, auth_dir: &Path) -> Result<()> {
 pub fn push_task(
     client: &JiraClient,
     config: &PluginConfig,
+    discovered: &DiscoveredMappings,
     task: &Task,
     _task_id: &str,
 ) -> Result<Option<PushResponse>> {
     match task.remote_key() {
-        Some(key) => update_remote(client, config, task, key),
-        None => {
-            if config.create_in_remote {
-                create_remote(client, config, task)
-            } else {
-                Ok(None)
-            }
-        }
+        Some(key) => update_remote(client, config, discovered, task, key),
+        None if config.create_in_remote => create_remote(client, config, discovered, task),
+        None => Ok(None),
     }
 }
 
 fn create_remote(
     client: &JiraClient,
     config: &PluginConfig,
+    discovered: &DiscoveredMappings,
     task: &Task,
 ) -> Result<Option<PushResponse>> {
     let fields = CreateFields {
@@ -58,15 +57,14 @@ fn create_remote(
         } else {
             Some(Value::String(task.description.clone()))
         },
-        priority: Some(mapping::balls_priority_to_jira(task.priority).to_string()),
+        priority: Some(mapping::balls_priority_to_jira(task.priority, Some(discovered))),
         labels: task.tags.clone(),
     };
     let (key, browse_url) = client.create_issue(&fields)?;
 
-    // If the task has a non-open status, transition after creation
     let normalized = task.status.to_lowercase().replace(' ', "_");
     if normalized != "open" {
-        client.transition_issue(&key, &task.status)?;
+        client.transition_issue(&key, &task.status, config, Some(discovered))?;
     }
 
     Ok(Some(PushResponse {
@@ -79,6 +77,7 @@ fn create_remote(
 fn update_remote(
     client: &JiraClient,
     config: &PluginConfig,
+    discovered: &DiscoveredMappings,
     task: &Task,
     key: &str,
 ) -> Result<Option<PushResponse>> {
@@ -88,37 +87,37 @@ fn update_remote(
     if remote.fields.summary != task.title {
         update.summary = Some(task.title.clone());
     }
-
     let remote_desc = client.extract_description(&remote);
     if remote_desc != task.description {
         update.description = Some(Value::String(task.description.clone()));
     }
-
     let remote_priority = remote
         .fields
         .priority
         .as_ref()
-        .map(|p| mapping::jira_priority_to_balls(&p.name))
+        .map(|p| mapping::jira_priority_to_balls(&p.name, Some(discovered)))
         .unwrap_or(3);
     if remote_priority != task.priority {
-        update.priority = Some(mapping::balls_priority_to_jira(task.priority).to_string());
+        update.priority = Some(mapping::balls_priority_to_jira(
+            task.priority,
+            Some(discovered),
+        ));
     }
-
     if remote.fields.labels != task.tags {
         update.labels = Some(task.tags.clone());
     }
-
     client.update_issue(key, &update)?;
 
-    // Handle status transition
-    let remote_balls_status = mapping::jira_status_to_balls(&remote.fields.status.name, config);
-    let task_status_normalized = task.status.to_lowercase().replace(' ', "_");
-    if remote_balls_status != task_status_normalized {
-        if task_status_normalized == "closed" && !config.close_in_remote {
-            // Skip closing in remote if disabled
-        } else {
-            client.transition_issue(key, &task.status)?;
-        }
+    let remote_balls = mapping::jira_status_to_balls(
+        &remote.fields.status.name,
+        config,
+        Some(discovered),
+    );
+    let task_status = task.status.to_lowercase().replace(' ', "_");
+    if remote_balls != task_status
+        && (task_status != "closed" || config.close_in_remote)
+    {
+        client.transition_issue(key, &task.status, config, Some(discovered))?;
     }
 
     Ok(Some(PushResponse {
@@ -151,13 +150,11 @@ mod tests {
 
     #[test]
     fn task_without_remote_key_and_no_create() {
-        // Just verify the logic path: no remote key + create_in_remote=false -> None
         let task = sample_task(None);
         let config: PluginConfig = serde_json::from_str(
             r#"{"url":"https://x","project":"X","create_in_remote":false}"#,
         )
         .unwrap();
-        // We can't call push_task without a real server, but we can verify config
         assert!(!config.create_in_remote);
         assert!(task.remote_key().is_none());
     }

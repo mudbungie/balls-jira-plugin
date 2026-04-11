@@ -3,6 +3,7 @@ use crate::auth;
 use crate::config::PluginConfig;
 use crate::error::Result;
 use crate::jira::client::JiraClient;
+use crate::jira::discover::DiscoveredMappings;
 use crate::types::{SyncDelete, SyncReport, Task};
 use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
@@ -11,13 +12,14 @@ use std::path::Path;
 pub fn run(task_filter: Option<&str>, config_path: &Path, auth_dir: &Path) -> Result<()> {
     let config = PluginConfig::load(config_path)?;
     let provider = auth::create_provider(&config);
-    let client = JiraClient::new(config.clone(), provider.as_ref(), auth_dir);
+    let mut client = JiraClient::new(config.clone(), provider.as_ref(), auth_dir);
+    let discovered = client.discover();
 
     let mut stdin_buf = String::new();
     std::io::stdin().read_to_string(&mut stdin_buf)?;
     let tasks: Vec<Task> = serde_json::from_str(&stdin_buf)?;
 
-    let report = build_sync_report(&client, &config, &tasks, task_filter)?;
+    let report = build_sync_report(&client, &config, &discovered, &tasks, task_filter)?;
     println!("{}", serde_json::to_string(&report)?);
     Ok(())
 }
@@ -25,6 +27,7 @@ pub fn run(task_filter: Option<&str>, config_path: &Path, auth_dir: &Path) -> Re
 pub fn build_sync_report(
     client: &JiraClient,
     config: &PluginConfig,
+    discovered: &DiscoveredMappings,
     tasks: &[Task],
     task_filter: Option<&str>,
 ) -> Result<SyncReport> {
@@ -36,7 +39,7 @@ pub fn build_sync_report(
     }
 
     if let Some(filter) = task_filter {
-        return sync_single(client, config, tasks, &local_by_key, filter);
+        return sync_single(client, config, discovered, tasks, &local_by_key, filter);
     }
 
     let jql = config.effective_sync_filter();
@@ -47,10 +50,12 @@ pub fn build_sync_report(
     for issue in &remote_issues {
         seen_keys.insert(issue.key.clone());
         match local_by_key.get(&issue.key) {
-            None => report.created.push(sync_diff::issue_to_create(client, config, issue)),
+            None => report
+                .created
+                .push(sync_diff::issue_to_create(client, config, discovered, issue)),
             Some(task) => {
-                if let Some(update) = sync_diff::diff_issue(client, config, task, issue) {
-                    report.updated.push(update);
+                if let Some(u) = sync_diff::diff_issue(client, config, discovered, task, issue) {
+                    report.updated.push(u);
                 }
             }
         }
@@ -71,6 +76,7 @@ pub fn build_sync_report(
 fn sync_single(
     client: &JiraClient,
     config: &PluginConfig,
+    discovered: &DiscoveredMappings,
     tasks: &[Task],
     local_by_key: &BTreeMap<String, &Task>,
     filter: &str,
@@ -80,8 +86,8 @@ fn sync_single(
     if let Some(task) = tasks.iter().find(|t| t.id == filter) {
         if let Some(key) = task.remote_key() {
             let issue = client.get_issue(key)?;
-            if let Some(update) = sync_diff::diff_issue(client, config, task, &issue) {
-                report.updated.push(update);
+            if let Some(u) = sync_diff::diff_issue(client, config, discovered, task, &issue) {
+                report.updated.push(u);
             }
         }
         return Ok(report);
@@ -89,10 +95,12 @@ fn sync_single(
 
     let issue = client.get_issue(filter)?;
     match local_by_key.get(&issue.key) {
-        None => report.created.push(sync_diff::issue_to_create(client, config, &issue)),
+        None => report
+            .created
+            .push(sync_diff::issue_to_create(client, config, discovered, &issue)),
         Some(task) => {
-            if let Some(update) = sync_diff::diff_issue(client, config, task, &issue) {
-                report.updated.push(update);
+            if let Some(u) = sync_diff::diff_issue(client, config, discovered, task, &issue) {
+                report.updated.push(u);
             }
         }
     }

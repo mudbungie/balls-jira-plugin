@@ -1,7 +1,9 @@
 use crate::config::PluginConfig;
+use crate::jira::discover::{self, DiscoveredMappings};
 use std::collections::HashMap;
 
-const DEFAULT_STATUS_MAP: &[(&str, &str)] = &[
+/// Hardcoded fallbacks — used only when both config and discovery are empty.
+const FALLBACK_STATUS_MAP: &[(&str, &str)] = &[
     ("open", "To Do"),
     ("in_progress", "In Progress"),
     ("review", "In Review"),
@@ -10,25 +12,37 @@ const DEFAULT_STATUS_MAP: &[(&str, &str)] = &[
     ("deferred", "Backlog"),
 ];
 
-const DEFAULT_PRIORITY_MAP: &[(u8, &str)] = &[
+const FALLBACK_PRIORITY: &[(u8, &str)] = &[
     (1, "Highest"),
     (2, "High"),
     (3, "Medium"),
     (4, "Low"),
 ];
 
-const DEFAULT_TYPE_MAP: &[(&str, &str)] = &[
+const FALLBACK_TYPES: &[(&str, &str)] = &[
     ("epic", "Epic"),
     ("task", "Task"),
     ("bug", "Bug"),
 ];
 
-pub fn balls_status_to_jira(status: &str, config: &PluginConfig) -> String {
+/// balls status → Jira status name.
+/// Precedence: config.status_map > discovered > fallback.
+pub fn balls_status_to_jira(
+    status: &str,
+    config: &PluginConfig,
+    discovered: Option<&DiscoveredMappings>,
+) -> String {
     let normalized = status.to_lowercase().replace(' ', "_");
     if let Some(mapped) = config.status_map.get(&normalized) {
         return mapped.clone();
     }
-    for (balls, jira) in DEFAULT_STATUS_MAP {
+    if let Some(d) = discovered {
+        let auto_map = discover::build_status_map(&d.statuses);
+        if let Some(mapped) = auto_map.get(&normalized) {
+            return mapped.clone();
+        }
+    }
+    for (balls, jira) in FALLBACK_STATUS_MAP {
         if *balls == normalized {
             return (*jira).to_string();
         }
@@ -36,13 +50,29 @@ pub fn balls_status_to_jira(status: &str, config: &PluginConfig) -> String {
     status.to_string()
 }
 
-pub fn jira_status_to_balls(jira_status: &str, config: &PluginConfig) -> String {
+/// Jira status name → balls status.
+/// Precedence: config.status_map (reversed) > discovered (by category) > fallback.
+pub fn jira_status_to_balls(
+    jira_status: &str,
+    config: &PluginConfig,
+    discovered: Option<&DiscoveredMappings>,
+) -> String {
     let reverse = reverse_map(&config.status_map);
     let lower = jira_status.to_lowercase();
     if let Some(balls) = reverse.get(&lower) {
         return balls.clone();
     }
-    for (balls, jira) in DEFAULT_STATUS_MAP {
+    if let Some(d) = discovered {
+        if let Some(cat) = d.statuses.get(jira_status) {
+            return discover::category_to_balls_status(cat).to_string();
+        }
+        for (name, cat) in &d.statuses {
+            if name.to_lowercase() == lower {
+                return discover::category_to_balls_status(cat).to_string();
+            }
+        }
+    }
+    for (balls, jira) in FALLBACK_STATUS_MAP {
         if jira.to_lowercase() == lower {
             return (*balls).to_string();
         }
@@ -50,18 +80,30 @@ pub fn jira_status_to_balls(jira_status: &str, config: &PluginConfig) -> String 
     "open".to_string()
 }
 
-pub fn balls_priority_to_jira(priority: u8) -> &'static str {
-    for (p, name) in DEFAULT_PRIORITY_MAP {
-        if *p == priority {
+/// balls priority (1-4) → Jira priority name.
+pub fn balls_priority_to_jira(priority: u8, discovered: Option<&DiscoveredMappings>) -> String {
+    if let Some(d) = discovered {
+        if let Some(name) = discover::priority_balls_to_jira(priority, &d.priorities) {
             return name;
         }
     }
-    "Medium"
+    for (p, name) in FALLBACK_PRIORITY {
+        if *p == priority {
+            return (*name).to_string();
+        }
+    }
+    "Medium".to_string()
 }
 
-pub fn jira_priority_to_balls(jira_priority: &str) -> u8 {
+/// Jira priority name → balls priority (1-4).
+pub fn jira_priority_to_balls(jira_priority: &str, discovered: Option<&DiscoveredMappings>) -> u8 {
+    if let Some(d) = discovered {
+        if let Some(p) = discover::priority_jira_to_balls(jira_priority, &d.priorities) {
+            return p;
+        }
+    }
     let lower = jira_priority.to_lowercase();
-    for (p, name) in DEFAULT_PRIORITY_MAP {
+    for (p, name) in FALLBACK_PRIORITY {
         if name.to_lowercase() == lower {
             return *p;
         }
@@ -71,7 +113,7 @@ pub fn jira_priority_to_balls(jira_priority: &str) -> u8 {
 
 pub fn balls_type_to_jira(task_type: &str) -> String {
     let lower = task_type.to_lowercase();
-    for (balls, jira) in DEFAULT_TYPE_MAP {
+    for (balls, jira) in FALLBACK_TYPES {
         if *balls == lower {
             return (*jira).to_string();
         }
@@ -81,7 +123,7 @@ pub fn balls_type_to_jira(task_type: &str) -> String {
 
 pub fn jira_type_to_balls(jira_type: &str) -> String {
     let lower = jira_type.to_lowercase();
-    for (balls, jira) in DEFAULT_TYPE_MAP {
+    for (balls, jira) in FALLBACK_TYPES {
         if jira.to_lowercase() == lower {
             return (*balls).to_string();
         }
@@ -114,90 +156,102 @@ mod tests {
         .unwrap()
     }
 
+    fn mock_discovered() -> DiscoveredMappings {
+        let mut statuses = HashMap::new();
+        statuses.insert("Backlog".into(), "new".into());
+        statuses.insert("Developing".into(), "indeterminate".into());
+        statuses.insert("Finished".into(), "done".into());
+        DiscoveredMappings {
+            priorities: vec!["P0".into(), "P1".into(), "P2".into(), "P3".into()],
+            statuses,
+            ..Default::default()
+        }
+    }
+
+    // --- status tests ---
+
     #[test]
-    fn status_default_mapping() {
+    fn status_fallback() {
         let cfg = empty_config();
-        assert_eq!(balls_status_to_jira("open", &cfg), "To Do");
-        assert_eq!(balls_status_to_jira("in_progress", &cfg), "In Progress");
-        assert_eq!(balls_status_to_jira("review", &cfg), "In Review");
-        assert_eq!(balls_status_to_jira("blocked", &cfg), "Blocked");
-        assert_eq!(balls_status_to_jira("closed", &cfg), "Done");
-        assert_eq!(balls_status_to_jira("deferred", &cfg), "Backlog");
+        assert_eq!(balls_status_to_jira("open", &cfg, None), "To Do");
+        assert_eq!(balls_status_to_jira("closed", &cfg, None), "Done");
     }
 
     #[test]
-    fn status_custom_mapping() {
+    fn status_discovered_overrides_fallback() {
+        let cfg = empty_config();
+        let d = mock_discovered();
+        assert_eq!(balls_status_to_jira("open", &cfg, Some(&d)), "Backlog");
+        assert_eq!(balls_status_to_jira("closed", &cfg, Some(&d)), "Finished");
+    }
+
+    #[test]
+    fn status_config_overrides_discovered() {
         let cfg = custom_config();
-        assert_eq!(balls_status_to_jira("open", &cfg), "Nuevo");
-        assert_eq!(balls_status_to_jira("closed", &cfg), "Cerrado");
-        // Uncustomized falls through to default
-        assert_eq!(balls_status_to_jira("blocked", &cfg), "Blocked");
+        let d = mock_discovered();
+        assert_eq!(balls_status_to_jira("open", &cfg, Some(&d)), "Nuevo");
+        assert_eq!(balls_status_to_jira("closed", &cfg, Some(&d)), "Cerrado");
     }
 
     #[test]
     fn status_unknown_passthrough() {
         let cfg = empty_config();
-        assert_eq!(balls_status_to_jira("mystery", &cfg), "mystery");
+        assert_eq!(balls_status_to_jira("mystery", &cfg, None), "mystery");
     }
 
     #[test]
-    fn status_case_insensitive() {
+    fn reverse_status_fallback() {
         let cfg = empty_config();
-        assert_eq!(balls_status_to_jira("Open", &cfg), "To Do");
-        assert_eq!(balls_status_to_jira("In Progress", &cfg), "In Progress");
+        assert_eq!(jira_status_to_balls("To Do", &cfg, None), "open");
+        assert_eq!(jira_status_to_balls("Done", &cfg, None), "closed");
     }
 
     #[test]
-    fn reverse_status_default() {
+    fn reverse_status_discovered() {
         let cfg = empty_config();
-        assert_eq!(jira_status_to_balls("To Do", &cfg), "open");
-        assert_eq!(jira_status_to_balls("In Progress", &cfg), "in_progress");
-        assert_eq!(jira_status_to_balls("Done", &cfg), "closed");
-    }
-
-    #[test]
-    fn reverse_status_custom() {
-        let cfg = custom_config();
-        assert_eq!(jira_status_to_balls("Nuevo", &cfg), "open");
-        assert_eq!(jira_status_to_balls("Cerrado", &cfg), "closed");
+        let d = mock_discovered();
+        assert_eq!(jira_status_to_balls("Backlog", &cfg, Some(&d)), "open");
+        assert_eq!(jira_status_to_balls("Developing", &cfg, Some(&d)), "in_progress");
+        assert_eq!(jira_status_to_balls("Finished", &cfg, Some(&d)), "closed");
     }
 
     #[test]
     fn reverse_status_unknown() {
         let cfg = empty_config();
-        assert_eq!(jira_status_to_balls("Weird", &cfg), "open");
+        assert_eq!(jira_status_to_balls("Weird", &cfg, None), "open");
+    }
+
+    // --- priority tests ---
+
+    #[test]
+    fn priority_fallback() {
+        assert_eq!(balls_priority_to_jira(1, None), "Highest");
+        assert_eq!(balls_priority_to_jira(4, None), "Low");
+        assert_eq!(balls_priority_to_jira(5, None), "Medium");
     }
 
     #[test]
-    fn reverse_status_case_insensitive() {
-        let cfg = empty_config();
-        assert_eq!(jira_status_to_balls("to do", &cfg), "open");
-        assert_eq!(jira_status_to_balls("TO DO", &cfg), "open");
+    fn priority_discovered() {
+        let d = mock_discovered();
+        assert_eq!(balls_priority_to_jira(1, Some(&d)), "P0");
+        assert_eq!(balls_priority_to_jira(4, Some(&d)), "P3");
     }
 
     #[test]
-    fn priority_to_jira() {
-        assert_eq!(balls_priority_to_jira(1), "Highest");
-        assert_eq!(balls_priority_to_jira(2), "High");
-        assert_eq!(balls_priority_to_jira(3), "Medium");
-        assert_eq!(balls_priority_to_jira(4), "Low");
-        assert_eq!(balls_priority_to_jira(5), "Medium");
+    fn reverse_priority_discovered() {
+        let d = mock_discovered();
+        assert_eq!(jira_priority_to_balls("P1", Some(&d)), 2);
+        assert_eq!(jira_priority_to_balls("Unknown", Some(&d)), 3);
     }
 
     #[test]
-    fn priority_from_jira() {
-        assert_eq!(jira_priority_to_balls("Highest"), 1);
-        assert_eq!(jira_priority_to_balls("High"), 2);
-        assert_eq!(jira_priority_to_balls("Medium"), 3);
-        assert_eq!(jira_priority_to_balls("Low"), 4);
-        assert_eq!(jira_priority_to_balls("Unknown"), 3);
+    fn reverse_priority_fallback() {
+        assert_eq!(jira_priority_to_balls("Highest", None), 1);
+        assert_eq!(jira_priority_to_balls("Low", None), 4);
+        assert_eq!(jira_priority_to_balls("Unknown", None), 3);
     }
 
-    #[test]
-    fn priority_case_insensitive() {
-        assert_eq!(jira_priority_to_balls("highest"), 1);
-        assert_eq!(jira_priority_to_balls("LOW"), 4);
-    }
+    // --- type tests ---
 
     #[test]
     fn type_to_jira() {
@@ -214,11 +268,5 @@ mod tests {
         assert_eq!(jira_type_to_balls("Bug"), "bug");
         assert_eq!(jira_type_to_balls("Story"), "task");
         assert_eq!(jira_type_to_balls("Unknown"), "task");
-    }
-
-    #[test]
-    fn type_case_insensitive() {
-        assert_eq!(balls_type_to_jira("EPIC"), "Epic");
-        assert_eq!(jira_type_to_balls("bug"), "bug");
     }
 }

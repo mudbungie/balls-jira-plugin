@@ -22,7 +22,7 @@ impl PatAuth {
         input: &mut dyn BufRead,
         output: &mut dyn Write,
     ) -> Result<()> {
-        let prompt = match self.config.server_type {
+        let prompt = match *self.config.effective_server_type() {
             ServerType::Cloud => "Email address",
             ServerType::Server => "Username",
         };

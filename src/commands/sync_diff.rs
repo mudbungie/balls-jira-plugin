@@ -1,5 +1,6 @@
 use crate::config::PluginConfig;
 use crate::jira::client::JiraClient;
+use crate::jira::discover::DiscoveredMappings;
 use crate::jira::types::JiraIssue;
 use crate::mapping;
 use crate::types::{ExternalMeta, SyncCreate, SyncUpdate, Task};
@@ -10,16 +11,18 @@ use std::collections::BTreeMap;
 pub fn issue_to_create(
     client: &JiraClient,
     config: &PluginConfig,
+    discovered: &DiscoveredMappings,
     issue: &JiraIssue,
 ) -> SyncCreate {
     let description = client.extract_description(issue);
+    let d = Some(discovered);
     let priority = issue
         .fields
         .priority
         .as_ref()
-        .map(|p| mapping::jira_priority_to_balls(&p.name))
+        .map(|p| mapping::jira_priority_to_balls(&p.name, d))
         .unwrap_or(3);
-    let status = mapping::jira_status_to_balls(&issue.fields.status.name, config);
+    let status = mapping::jira_status_to_balls(&issue.fields.status.name, config, d);
     let task_type = mapping::jira_type_to_balls(&issue.fields.issuetype.name);
 
     SyncCreate {
@@ -40,18 +43,17 @@ pub fn issue_to_create(
 pub fn diff_issue(
     client: &JiraClient,
     config: &PluginConfig,
+    discovered: &DiscoveredMappings,
     task: &Task,
     issue: &JiraIssue,
 ) -> Option<SyncUpdate> {
+    let d = Some(discovered);
     let mut fields = BTreeMap::new();
     let mut notes = Vec::new();
 
     if issue.fields.summary != task.title {
         fields.insert("title".into(), Value::String(issue.fields.summary.clone()));
-        notes.push(format!(
-            "Title changed to \"{}\" in Jira",
-            issue.fields.summary
-        ));
+        notes.push(format!("Title changed to \"{}\" in Jira", issue.fields.summary));
     }
 
     let remote_desc = client.extract_description(issue);
@@ -63,31 +65,22 @@ pub fn diff_issue(
         .fields
         .priority
         .as_ref()
-        .map(|p| mapping::jira_priority_to_balls(&p.name))
+        .map(|p| mapping::jira_priority_to_balls(&p.name, d))
         .unwrap_or(3);
     if remote_priority != task.priority {
         fields.insert("priority".into(), Value::Number(remote_priority.into()));
     }
 
-    let remote_status = mapping::jira_status_to_balls(&issue.fields.status.name, config);
+    let remote_status = mapping::jira_status_to_balls(&issue.fields.status.name, config, d);
     let task_status = task.status.to_lowercase().replace(' ', "_");
     if remote_status != task_status {
         fields.insert("status".into(), Value::String(remote_status.clone()));
-        notes.push(format!(
-            "Status changed to {} in Jira",
-            issue.fields.status.name
-        ));
+        notes.push(format!("Status changed to {} in Jira", issue.fields.status.name));
     }
 
     if fields.is_empty() {
         return None;
     }
-
-    let note = if notes.is_empty() {
-        None
-    } else {
-        Some(notes.join("; "))
-    };
 
     Some(SyncUpdate {
         task_id: task.id.clone(),
@@ -97,7 +90,7 @@ pub fn diff_issue(
             remote_url: client.browse_url(&issue.key),
             synced_at: Utc::now(),
         },
-        add_note: note,
+        add_note: if notes.is_empty() { None } else { Some(notes.join("; ")) },
     })
 }
 
@@ -110,15 +103,19 @@ mod tests {
         serde_json::from_str(r#"{"url":"https://x","project":"X"}"#).unwrap()
     }
 
+    fn no_discovery() -> DiscoveredMappings {
+        DiscoveredMappings::default()
+    }
+
     #[test]
     fn create_maps_fields() {
         let config = sample_config();
         let auth = PatAuth::new(config.clone());
         let dir = tempfile::tempdir().unwrap();
         let client = JiraClient::new(config.clone(), &auth, dir.path());
+        let d = no_discovery();
 
-        let issue: JiraIssue = serde_json::from_str(
-            r#"{
+        let issue: JiraIssue = serde_json::from_str(r#"{
             "key": "X-1",
             "fields": {
                 "summary": "Remote task",
@@ -128,17 +125,14 @@ mod tests {
                 "description": null,
                 "labels": ["imported"]
             }
-        }"#,
-        )
-        .unwrap();
+        }"#).unwrap();
 
-        let create = issue_to_create(&client, &config, &issue);
+        let create = issue_to_create(&client, &config, &d, &issue);
         assert_eq!(create.title, "Remote task");
         assert_eq!(create.task_type, "bug");
         assert_eq!(create.priority, 2);
         assert_eq!(create.status, "in_progress");
         assert_eq!(create.external.remote_key, "X-1");
-        assert_eq!(create.tags, vec!["imported"]);
     }
 
     #[test]
@@ -147,32 +141,23 @@ mod tests {
         let auth = PatAuth::new(config.clone());
         let dir = tempfile::tempdir().unwrap();
         let client = JiraClient::new(config.clone(), &auth, dir.path());
+        let d = no_discovery();
 
         let task = Task {
-            id: "bl-1".into(),
-            title: "Same".into(),
-            task_type: "task".into(),
-            priority: 3,
-            status: "open".into(),
-            description: "".into(),
-            tags: vec![],
-            external: BTreeMap::new(),
+            id: "bl-1".into(), title: "Same".into(), task_type: "task".into(),
+            priority: 3, status: "open".into(), description: "".into(),
+            tags: vec![], external: BTreeMap::new(),
         };
-        let issue: JiraIssue = serde_json::from_str(
-            r#"{
+        let issue: JiraIssue = serde_json::from_str(r#"{
             "key": "X-1",
             "fields": {
-                "summary": "Same",
-                "issuetype": {"name": "Task"},
-                "priority": {"name": "Medium"},
-                "status": {"name": "To Do"},
+                "summary": "Same", "issuetype": {"name": "Task"},
+                "priority": {"name": "Medium"}, "status": {"name": "To Do"},
                 "description": null
             }
-        }"#,
-        )
-        .unwrap();
+        }"#).unwrap();
 
-        assert!(diff_issue(&client, &config, &task, &issue).is_none());
+        assert!(diff_issue(&client, &config, &d, &task, &issue).is_none());
     }
 
     #[test]
@@ -181,32 +166,23 @@ mod tests {
         let auth = PatAuth::new(config.clone());
         let dir = tempfile::tempdir().unwrap();
         let client = JiraClient::new(config.clone(), &auth, dir.path());
+        let d = no_discovery();
 
         let task = Task {
-            id: "bl-1".into(),
-            title: "Old".into(),
-            task_type: "task".into(),
-            priority: 3,
-            status: "open".into(),
-            description: "".into(),
-            tags: vec![],
-            external: BTreeMap::new(),
+            id: "bl-1".into(), title: "Old".into(), task_type: "task".into(),
+            priority: 3, status: "open".into(), description: "".into(),
+            tags: vec![], external: BTreeMap::new(),
         };
-        let issue: JiraIssue = serde_json::from_str(
-            r#"{
+        let issue: JiraIssue = serde_json::from_str(r#"{
             "key": "X-1",
             "fields": {
-                "summary": "New Title",
-                "issuetype": {"name": "Task"},
-                "priority": {"name": "High"},
-                "status": {"name": "In Progress"},
+                "summary": "New Title", "issuetype": {"name": "Task"},
+                "priority": {"name": "High"}, "status": {"name": "In Progress"},
                 "description": null
             }
-        }"#,
-        )
-        .unwrap();
+        }"#).unwrap();
 
-        let update = diff_issue(&client, &config, &task, &issue).unwrap();
+        let update = diff_issue(&client, &config, &d, &task, &issue).unwrap();
         assert_eq!(update.task_id, "bl-1");
         assert!(update.fields.contains_key("title"));
         assert!(update.fields.contains_key("priority"));

@@ -1,7 +1,7 @@
 use crate::auth::AuthProvider;
 use crate::config::{PluginConfig, ServerType};
 use crate::error::{PluginError, Result};
-use crate::jira::{cloud, server, types::*};
+use crate::jira::{cloud, discover, server, types::*};
 use crate::mapping;
 use reqwest::blocking::Client;
 use std::path::Path;
@@ -73,7 +73,7 @@ impl<'a> JiraClient<'a> {
     }
 
     pub fn create_issue(&self, fields: &CreateFields) -> Result<(String, String)> {
-        let payload = match self.config.server_type {
+        let payload = match *self.config.effective_server_type() {
             ServerType::Cloud => cloud::build_create_payload(
                 &fields.project_key,
                 &fields.summary,
@@ -106,7 +106,7 @@ impl<'a> JiraClient<'a> {
         if fields.is_empty() {
             return Ok(());
         }
-        let payload = match self.config.server_type {
+        let payload = match *self.config.effective_server_type() {
             ServerType::Cloud => cloud::build_update_payload(
                 fields.summary.as_deref(),
                 fields.description.as_ref().and_then(|d| d.as_str()),
@@ -126,13 +126,19 @@ impl<'a> JiraClient<'a> {
         Ok(())
     }
 
-    pub fn transition_issue(&self, key: &str, target_status: &str) -> Result<()> {
+    pub fn transition_issue(
+        &self,
+        key: &str,
+        target_status: &str,
+        config: &crate::config::PluginConfig,
+        discovered: Option<&discover::DiscoveredMappings>,
+    ) -> Result<()> {
         let path = format!("/issue/{}/transitions", key);
         let resp = self.get(&path)?.send()?;
         let resp = Self::check_response(resp)?;
         let tr: TransitionsResponse = resp.json()?;
 
-        let jira_status = mapping::balls_status_to_jira(target_status, &self.config);
+        let jira_status = mapping::balls_status_to_jira(target_status, config, discovered);
         let transition = tr.transitions.iter().find(|t| {
             t.to.as_ref()
                 .map(|to| to.name.to_lowercase() == jira_status.to_lowercase())
@@ -184,7 +190,7 @@ impl<'a> JiraClient<'a> {
     pub fn extract_description(&self, issue: &JiraIssue) -> String {
         match &issue.fields.description {
             None => String::new(),
-            Some(desc) => match self.config.server_type {
+            Some(desc) => match *self.config.effective_server_type() {
                 ServerType::Cloud => cloud::adf_to_text(desc),
                 ServerType::Server => server::extract_description(desc),
             },
@@ -193,6 +199,31 @@ impl<'a> JiraClient<'a> {
 
     pub fn browse_url(&self, key: &str) -> String {
         format!("{}/browse/{}", self.config.url.trim_end_matches('/'), key)
+    }
+
+    #[allow(dead_code)]
+    pub fn config_mut(&mut self) -> &mut PluginConfig {
+        &mut self.config
+    }
+
+    /// Query the Jira instance to discover server type, statuses, priorities,
+    /// and issue types. Updates server_type in-place if auto-detected.
+    pub fn discover(&mut self) -> discover::DiscoveredMappings {
+        let get = |path: &str| -> Result<String> {
+            let resp = self.get(path)?.send()?;
+            let resp = Self::check_response(resp)?;
+            Ok(resp.text()?)
+        };
+        let mut m = discover::run_discovery(&get, &self.config.project.clone());
+        if let Some(st) = &m.server_type {
+            if self.config.server_type_auto() {
+                self.config.server_type = Some(st.clone());
+            }
+        }
+        if m.server_type.is_none() {
+            m.server_type = Some(self.config.effective_server_type().clone());
+        }
+        m
     }
 }
 

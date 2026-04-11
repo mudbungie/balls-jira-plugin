@@ -24,8 +24,9 @@ pub struct PluginConfig {
     pub project: String,
     #[serde(default = "default_auth_method")]
     pub auth_method: AuthMethod,
-    #[serde(default = "default_server_type")]
-    pub server_type: ServerType,
+    /// None means auto-detect from serverInfo API.
+    #[serde(default)]
+    pub server_type: Option<ServerType>,
     #[serde(default)]
     pub status_map: HashMap<String, String>,
     #[serde(default)]
@@ -58,19 +59,25 @@ impl PluginConfig {
         })
     }
 
+    pub fn effective_server_type(&self) -> &ServerType {
+        self.server_type.as_ref().unwrap_or(&ServerType::Cloud)
+    }
+
     pub fn api_base(&self) -> &str {
-        match self.server_type {
+        match self.effective_server_type() {
             ServerType::Cloud => "/rest/api/3",
             ServerType::Server => "/rest/api/2",
         }
+    }
+
+    /// True if server_type was not explicitly set (should auto-detect).
+    pub fn server_type_auto(&self) -> bool {
+        self.server_type.is_none()
     }
 }
 
 fn default_auth_method() -> AuthMethod {
     AuthMethod::Pat
-}
-fn default_server_type() -> ServerType {
-    ServerType::Cloud
 }
 fn default_true() -> bool {
     true
@@ -87,7 +94,9 @@ mod tests {
         assert_eq!(cfg.url, "https://x.atlassian.net");
         assert_eq!(cfg.project, "X");
         assert_eq!(cfg.auth_method, AuthMethod::Pat);
-        assert_eq!(cfg.server_type, ServerType::Cloud);
+        assert!(cfg.server_type.is_none()); // auto-detect
+        assert_eq!(*cfg.effective_server_type(), ServerType::Cloud); // default
+        assert!(cfg.server_type_auto());
         assert!(cfg.create_in_remote);
         assert!(cfg.close_in_remote);
         assert!(cfg.sync_filter.is_none());
@@ -108,7 +117,8 @@ mod tests {
         }"#;
         let cfg: PluginConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.auth_method, AuthMethod::DeviceAuth);
-        assert_eq!(cfg.server_type, ServerType::Server);
+        assert_eq!(cfg.server_type, Some(ServerType::Server));
+        assert!(!cfg.server_type_auto());
         assert!(!cfg.create_in_remote);
         assert_eq!(
             cfg.device_auth_helper_path.as_deref(),
