@@ -1,0 +1,20 @@
+{
+  "id": "bl-7f9f",
+  "title": "Address audit findings: security, quality, polish",
+  "type": "task",
+  "priority": 1,
+  "status": "open",
+  "parent": null,
+  "depends_on": [],
+  "description": "Fix issues from professional audit: rpassword, OAuth state/callback, credential file perms, transition bugs, dead code, README accuracy, typos, help strings",
+  "created_at": "2026-04-11T23:53:35.256837103Z",
+  "updated_at": "2026-04-11T23:53:35.256837103Z",
+  "closed_at": null,
+  "claimed_by": null,
+  "branch": null,
+  "tags": [],
+  "notes": [],
+  "links": [],
+  "closed_children": [],
+  "external": {}
+}
