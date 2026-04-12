@@ -1,6 +1,6 @@
 use crate::auth;
 use crate::config::PluginConfig;
-use crate::error::Result;
+use crate::error::{PluginError, Result};
 use crate::jira::client::JiraClient;
 use crate::jira::discover::DiscoveredMappings;
 use crate::jira::types::{CreateFields, UpdateFields};
@@ -15,13 +15,19 @@ pub fn run(task_id: &str, config_path: &Path, auth_dir: &Path) -> Result<()> {
     let config = PluginConfig::load(config_path)?;
     let provider = auth::create_provider(&config);
     let mut client = JiraClient::new(config.clone(), provider.as_ref(), auth_dir);
-    let discovered = client.discover();
+    let discovered = client.discover()?;
 
     let mut stdin_buf = String::new();
     std::io::stdin().read_to_string(&mut stdin_buf)?;
     let task: Task = serde_json::from_str(&stdin_buf)?;
+    if task.id != task_id {
+        return Err(PluginError::Other(format!(
+            "--task {} does not match stdin task id {}",
+            task_id, task.id
+        )));
+    }
 
-    let response = push_task(&client, &config, &discovered, &task, task_id)?;
+    let response = push_task(&client, &config, &discovered, &task)?;
     if let Some(resp) = response {
         println!("{}", serde_json::to_string(&resp)?);
     }
@@ -33,7 +39,6 @@ pub fn push_task(
     config: &PluginConfig,
     discovered: &DiscoveredMappings,
     task: &Task,
-    _task_id: &str,
 ) -> Result<Option<PushResponse>> {
     match task.remote_key() {
         Some(key) => update_remote(client, config, discovered, task, key),
@@ -62,10 +67,10 @@ fn create_remote(
     };
     let (key, browse_url) = client.create_issue(&fields)?;
 
-    let normalized = task.status.to_lowercase().replace(' ', "_");
-    if normalized != "open" {
-        client.transition_issue(&key, &task.status, config, Some(discovered))?;
-    }
+    // Always attempt a transition to the task's status; transition_issue is
+    // a no-op when the issue already matches. This handles Jira workflows
+    // whose default landing state differs from the balls "open" state.
+    client.transition_issue(&key, &task.status, config, Some(discovered))?;
 
     Ok(Some(PushResponse {
         remote_key: key,

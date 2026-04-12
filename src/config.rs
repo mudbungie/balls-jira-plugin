@@ -1,6 +1,6 @@
 use crate::error::{PluginError, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -28,10 +28,7 @@ pub struct PluginConfig {
     #[serde(default)]
     pub server_type: Option<ServerType>,
     #[serde(default)]
-    pub status_map: HashMap<String, String>,
-    #[serde(default)]
-    #[allow(dead_code)] // used for future field mapping expansion
-    pub field_map: HashMap<String, String>,
+    pub status_map: BTreeMap<String, String>,
     #[serde(default)]
     pub sync_filter: Option<String>,
     #[serde(default = "default_true")]

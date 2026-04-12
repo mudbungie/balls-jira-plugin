@@ -16,11 +16,14 @@ impl PatAuth {
         Self { config }
     }
 
+    /// Interactive setup. `read_password` is a closure so tests can inject
+    /// a token without needing a TTY.
     pub fn setup_with_io(
         &self,
         auth_dir: &Path,
         input: &mut dyn BufRead,
         output: &mut dyn Write,
+        read_password: &mut dyn FnMut() -> Result<String>,
     ) -> Result<()> {
         let prompt = match *self.config.effective_server_type() {
             ServerType::Cloud => "Email address",
@@ -32,16 +35,14 @@ impl PatAuth {
         input.read_line(&mut username)?;
         let username = username.trim().to_string();
         if username.is_empty() {
-            return Err(PluginError::Auth("username cannot be empty".into()));
+            return Err(PluginError::Auth("Username cannot be empty".into()));
         }
 
-        write!(output, "API token: ")?;
+        write!(output, "API token (hidden): ")?;
         output.flush()?;
-        let mut token = String::new();
-        input.read_line(&mut token)?;
-        let token = token.trim().to_string();
+        let token = read_password()?.trim().to_string();
         if token.is_empty() {
-            return Err(PluginError::Auth("token cannot be empty".into()));
+            return Err(PluginError::Auth("API token cannot be empty".into()));
         }
 
         let creds = PatCredentials { username, token };
@@ -57,7 +58,11 @@ impl AuthProvider for PatAuth {
         let stdin = io::stdin();
         let mut reader = stdin.lock();
         let mut writer = io::stderr();
-        self.setup_with_io(auth_dir, &mut reader, &mut writer)
+        let mut read_password = || -> Result<String> {
+            rpassword::read_password()
+                .map_err(|e| PluginError::Auth(format!("failed to read token: {}", e)))
+        };
+        self.setup_with_io(auth_dir, &mut reader, &mut writer, &mut read_password)
     }
 
     fn check(&self, auth_dir: &Path) -> Result<()> {
@@ -91,13 +96,18 @@ mod tests {
         .unwrap()
     }
 
+    fn with_token(token: &'static str) -> impl FnMut() -> Result<String> {
+        move || Ok(token.to_string())
+    }
+
     #[test]
     fn setup_cloud_prompts_email() {
         let auth = PatAuth::new(cloud_config());
         let dir = tempfile::tempdir().unwrap();
-        let mut input = io::Cursor::new(b"user@example.com\nsecret-token\n");
+        let mut input = io::Cursor::new(b"user@example.com\n");
         let mut output = Vec::new();
-        auth.setup_with_io(dir.path(), &mut input, &mut output)
+        let mut pw = with_token("secret-token");
+        auth.setup_with_io(dir.path(), &mut input, &mut output, &mut pw)
             .unwrap();
         let out = String::from_utf8(output).unwrap();
         assert!(out.contains("Email"));
@@ -110,9 +120,10 @@ mod tests {
     fn setup_server_prompts_username() {
         let auth = PatAuth::new(server_config());
         let dir = tempfile::tempdir().unwrap();
-        let mut input = io::Cursor::new(b"admin\nmy-pat\n");
+        let mut input = io::Cursor::new(b"admin\n");
         let mut output = Vec::new();
-        auth.setup_with_io(dir.path(), &mut input, &mut output)
+        let mut pw = with_token("my-pat");
+        auth.setup_with_io(dir.path(), &mut input, &mut output, &mut pw)
             .unwrap();
         let out = String::from_utf8(output).unwrap();
         assert!(out.contains("Username"));
@@ -122,9 +133,10 @@ mod tests {
     fn setup_empty_username_fails() {
         let auth = PatAuth::new(cloud_config());
         let dir = tempfile::tempdir().unwrap();
-        let mut input = io::Cursor::new(b"\nsecret\n");
+        let mut input = io::Cursor::new(b"\n");
         let mut output = Vec::new();
-        let err = auth.setup_with_io(dir.path(), &mut input, &mut output);
+        let mut pw = with_token("secret");
+        let err = auth.setup_with_io(dir.path(), &mut input, &mut output, &mut pw);
         assert!(err.is_err());
     }
 
@@ -132,9 +144,10 @@ mod tests {
     fn setup_empty_token_fails() {
         let auth = PatAuth::new(cloud_config());
         let dir = tempfile::tempdir().unwrap();
-        let mut input = io::Cursor::new(b"user@x.com\n\n");
+        let mut input = io::Cursor::new(b"user@x.com\n");
         let mut output = Vec::new();
-        let err = auth.setup_with_io(dir.path(), &mut input, &mut output);
+        let mut pw = with_token("");
+        let err = auth.setup_with_io(dir.path(), &mut input, &mut output, &mut pw);
         assert!(err.is_err());
     }
 

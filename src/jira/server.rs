@@ -2,11 +2,11 @@ use serde_json::{json, Value};
 
 /// Extract plain text description from Server API v2 response.
 /// Server descriptions are plain text or wiki markup stored as a string.
+/// Unexpected shapes return an empty string rather than leaking JSON.
 pub fn extract_description(desc: &Value) -> String {
     match desc {
         Value::String(s) => s.clone(),
-        Value::Null => String::new(),
-        _ => desc.to_string(),
+        _ => String::new(),
     }
 }
 
@@ -78,9 +78,10 @@ mod tests {
 
     #[test]
     fn extract_description_other() {
+        // Non-string JSON values (e.g. Cloud ADF leaking in) return empty
+        // rather than a raw JSON string.
         let val = json!({"type": "doc"});
-        let text = extract_description(&val);
-        assert!(text.contains("doc"));
+        assert_eq!(extract_description(&val), "");
     }
 
     #[test]

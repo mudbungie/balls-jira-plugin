@@ -1,8 +1,8 @@
 use crate::auth::AuthProvider;
 use crate::config::{PluginConfig, ServerType};
 use crate::error::{PluginError, Result};
+use crate::jira::transition::{self, TransitionPlan, TransitionRequest};
 use crate::jira::{cloud, discover, server, types::*};
-use crate::mapping;
 use reqwest::blocking::Client;
 use std::path::Path;
 
@@ -65,13 +65,6 @@ impl<'a> JiraClient<'a> {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn get_myself(&self) -> Result<()> {
-        let resp = self.get("/myself")?.send()?;
-        Self::check_response(resp)?;
-        Ok(())
-    }
-
     pub fn create_issue(&self, fields: &CreateFields) -> Result<(String, String)> {
         let payload = match *self.config.effective_server_type() {
             ServerType::Cloud => cloud::build_create_payload(
@@ -130,27 +123,27 @@ impl<'a> JiraClient<'a> {
         &self,
         key: &str,
         target_status: &str,
-        config: &crate::config::PluginConfig,
+        config: &PluginConfig,
         discovered: Option<&discover::DiscoveredMappings>,
     ) -> Result<()> {
         let path = format!("/issue/{}/transitions", key);
         let resp = self.get(&path)?.send()?;
-        let resp = Self::check_response(resp)?;
-        let tr: TransitionsResponse = resp.json()?;
+        let tr: TransitionsResponse = Self::check_response(resp)?.json()?;
+        let current = self.get_issue(key)?;
 
-        let jira_status = mapping::balls_status_to_jira(target_status, config, discovered);
-        let transition = tr.transitions.iter().find(|t| {
-            t.to.as_ref()
-                .map(|to| to.name.to_lowercase() == jira_status.to_lowercase())
-                .unwrap_or(false)
-                || t.name.to_lowercase() == jira_status.to_lowercase()
-        });
-        let transition = match transition {
-            Some(t) => t,
-            None => return Ok(()), // no matching transition available
+        let plan = transition::plan_transition(&TransitionRequest {
+            current_status: &current.fields.status.name,
+            target_status,
+            transitions: &tr,
+            config,
+            discovered,
+        })?;
+        let id = match plan {
+            TransitionPlan::NoOp => return Ok(()),
+            TransitionPlan::Execute(id) => id,
         };
 
-        let payload = serde_json::json!({"transition": {"id": transition.id}});
+        let payload = transition::build_transition_payload(&id);
         let resp = self.post(&path)?.json(&payload).send()?;
         Self::check_response(resp)?;
         Ok(())
@@ -201,29 +194,34 @@ impl<'a> JiraClient<'a> {
         format!("{}/browse/{}", self.config.url.trim_end_matches('/'), key)
     }
 
-    #[allow(dead_code)]
-    pub fn config_mut(&mut self) -> &mut PluginConfig {
-        &mut self.config
-    }
-
     /// Query the Jira instance to discover server type, statuses, priorities,
     /// and issue types. Updates server_type in-place if auto-detected.
-    pub fn discover(&mut self) -> discover::DiscoveredMappings {
+    /// Fails with an actionable error if server_type is in auto mode and
+    /// detection failed, so we don't silently send Cloud v3 requests to a
+    /// Server v2 instance.
+    pub fn discover(&mut self) -> Result<discover::DiscoveredMappings> {
         let get = |path: &str| -> Result<String> {
             let resp = self.get(path)?.send()?;
             let resp = Self::check_response(resp)?;
             Ok(resp.text()?)
         };
         let mut m = discover::run_discovery(&get, &self.config.project.clone());
-        if let Some(st) = &m.server_type {
-            if self.config.server_type_auto() {
-                self.config.server_type = Some(st.clone());
+        match (&m.server_type, self.config.server_type_auto()) {
+            (Some(st), true) => self.config.server_type = Some(st.clone()),
+            (None, true) => {
+                return Err(PluginError::Config(
+                    "Could not auto-detect server_type from /serverInfo. \
+                     Set \"server_type\": \"cloud\" or \"server\" in the \
+                     plugin config explicitly."
+                        .into(),
+                ));
             }
+            _ => {}
         }
         if m.server_type.is_none() {
             m.server_type = Some(self.config.effective_server_type().clone());
         }
-        m
+        Ok(m)
     }
 }
 

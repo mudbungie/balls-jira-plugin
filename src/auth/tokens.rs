@@ -41,9 +41,43 @@ pub fn load_json<T: serde::de::DeserializeOwned>(auth_dir: &Path, filename: &str
 
 pub fn save_json<T: serde::Serialize>(auth_dir: &Path, filename: &str, value: &T) -> Result<()> {
     std::fs::create_dir_all(auth_dir)?;
+    restrict_dir_perms(auth_dir)?;
     let path = auth_dir.join(filename);
     let data = serde_json::to_string_pretty(value)?;
-    std::fs::write(&path, data)?;
+    write_private(&path, data.as_bytes())?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_private(path: &Path, data: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(data)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, data: &[u8]) -> Result<()> {
+    std::fs::write(path, data)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_dir_perms(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o700);
+    std::fs::set_permissions(dir, perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_dir_perms(_dir: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -117,5 +151,26 @@ mod tests {
         save_json(&nested, "test.json", &"hello").unwrap();
         let loaded: String = load_json(&nested, "test.json").unwrap();
         assert_eq!(loaded, "hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_file_has_0600_perms() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        save_json(dir.path(), "secret.json", &"value").unwrap();
+        let meta = std::fs::metadata(dir.path().join("secret.json")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_dir_has_0700_perms() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let auth = dir.path().join("auth");
+        save_json(&auth, "x.json", &"v").unwrap();
+        let meta = std::fs::metadata(&auth).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
     }
 }

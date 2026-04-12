@@ -97,8 +97,9 @@ impl AuthProvider for DeviceAuth {
             .headers()
             .get("location")
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| PluginError::Auth("no redirect from IdP".into()))?
+            .ok_or_else(|| PluginError::Auth("No redirect from IdP".into()))?
             .to_string();
+        validate_redirect(&redirect_url, &idp_host, &self.config.url)?;
 
         // Step 4: Follow redirect
         let redirect_resp = client.get(&redirect_url).send()?;
@@ -152,6 +153,33 @@ impl AuthProvider for DeviceAuth {
             .join("; ");
         Ok(builder.header("Cookie", cookie_str))
     }
+}
+
+/// Validate that an IdP-provided redirect URL is safe to follow.
+/// Must be HTTPS, and must either resolve to the IdP host or the Jira URL's host.
+pub fn validate_redirect(redirect_url: &str, idp_host: &str, jira_url: &str) -> Result<()> {
+    let parsed = url::Url::parse(redirect_url)
+        .map_err(|e| PluginError::Auth(format!("Invalid redirect URL: {}", e)))?;
+    if parsed.scheme() != "https" {
+        return Err(PluginError::Auth(format!(
+            "Refusing non-HTTPS redirect: {}",
+            redirect_url
+        )));
+    }
+    let redirect_host = parsed
+        .host_str()
+        .ok_or_else(|| PluginError::Auth("Redirect URL has no host".into()))?;
+    let jira_host = url::Url::parse(jira_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .unwrap_or_default();
+    if redirect_host != idp_host && redirect_host != jira_host {
+        return Err(PluginError::Auth(format!(
+            "Refusing redirect to unexpected host: {} (expected {} or {})",
+            redirect_host, idp_host, jira_host
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -209,5 +237,50 @@ mod tests {
         let auth = DeviceAuth::new(cfg);
         let err = auth.helper_path().unwrap_err();
         assert!(err.to_string().contains("/nonexistent"));
+    }
+
+    #[test]
+    fn redirect_validation_accepts_idp_host() {
+        validate_redirect(
+            "https://idp.example.com/continue?x=1",
+            "idp.example.com",
+            "https://jira.example.com",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn redirect_validation_accepts_jira_host() {
+        validate_redirect(
+            "https://jira.example.com/saml/acs",
+            "idp.example.com",
+            "https://jira.example.com",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn redirect_validation_rejects_http() {
+        assert!(validate_redirect(
+            "http://idp.example.com/x",
+            "idp.example.com",
+            "https://jira.example.com",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn redirect_validation_rejects_foreign_host() {
+        assert!(validate_redirect(
+            "https://evil.example.com/x",
+            "idp.example.com",
+            "https://jira.example.com",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn redirect_validation_rejects_invalid_url() {
+        assert!(validate_redirect("not a url", "idp.example.com", "https://jira.example.com").is_err());
     }
 }

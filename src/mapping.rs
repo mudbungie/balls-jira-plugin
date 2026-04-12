@@ -1,6 +1,6 @@
 use crate::config::PluginConfig;
 use crate::jira::discover::{self, DiscoveredMappings};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Hardcoded fallbacks — used only when both config and discovery are empty.
 const FALLBACK_STATUS_MAP: &[(&str, &str)] = &[
@@ -134,7 +134,7 @@ pub fn jira_type_to_balls(jira_type: &str) -> String {
     "task".to_string()
 }
 
-fn reverse_map(map: &HashMap<String, String>) -> HashMap<String, String> {
+fn reverse_map(map: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     map.iter()
         .map(|(k, v)| (v.to_lowercase(), k.clone()))
         .collect()
@@ -157,7 +157,7 @@ mod tests {
     }
 
     fn mock_discovered() -> DiscoveredMappings {
-        let mut statuses = HashMap::new();
+        let mut statuses = BTreeMap::new();
         statuses.insert("Backlog".into(), "new".into());
         statuses.insert("Developing".into(), "indeterminate".into());
         statuses.insert("Finished".into(), "done".into());

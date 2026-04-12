@@ -1,14 +1,14 @@
 use crate::config::ServerType;
 use crate::error::Result;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Mappings discovered from the live Jira instance.
 #[derive(Debug, Clone, Default)]
 pub struct DiscoveredMappings {
     pub server_type: Option<ServerType>,
     /// Jira status name → statusCategory key ("new", "indeterminate", "done")
-    pub statuses: HashMap<String, String>,
+    pub statuses: BTreeMap<String, String>,
     /// Ordered list of priority names (index 0 = highest)
     pub priorities: Vec<String>,
     /// Jira issue type names available in the project
@@ -61,12 +61,12 @@ struct StatusCategory {
     key: String,
 }
 
-pub fn parse_project_statuses(body: &str) -> HashMap<String, String> {
+pub fn parse_project_statuses(body: &str) -> BTreeMap<String, String> {
     let entries: Vec<IssueTypeStatuses> = match serde_json::from_str(body) {
         Ok(v) => v,
-        Err(_) => return HashMap::new(),
+        Err(_) => return BTreeMap::new(),
     };
-    let mut map = HashMap::new();
+    let mut map = BTreeMap::new();
     for it in entries {
         for s in it.statuses {
             let cat = s
@@ -131,8 +131,8 @@ pub fn category_to_balls_status(category_key: &str) -> &'static str {
 
 /// Build a status map from discovered statuses: balls_status → jira_status_name.
 /// Groups by category, picks the first Jira status name for each balls status.
-pub fn build_status_map(statuses: &HashMap<String, String>) -> HashMap<String, String> {
-    let mut result: HashMap<String, String> = HashMap::new();
+pub fn build_status_map(statuses: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut result: BTreeMap<String, String> = BTreeMap::new();
     for (jira_name, category_key) in statuses {
         let balls = category_to_balls_status(category_key);
         result.entry(balls.to_string()).or_insert_with(|| jira_name.clone());
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn build_status_map_from_categories() {
-        let mut statuses = HashMap::new();
+        let mut statuses = BTreeMap::new();
         statuses.insert("Backlog".into(), "new".into());
         statuses.insert("In Dev".into(), "indeterminate".into());
         statuses.insert("Closed".into(), "done".into());

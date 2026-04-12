@@ -3,45 +3,58 @@ use crate::error::{PluginError, Result};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+
+fn form_selector() -> &'static scraper::Selector {
+    static SEL: OnceLock<scraper::Selector> = OnceLock::new();
+    SEL.get_or_init(|| scraper::Selector::parse("form").expect("static form selector"))
+}
+
+fn hidden_input_selector() -> &'static scraper::Selector {
+    static SEL: OnceLock<scraper::Selector> = OnceLock::new();
+    SEL.get_or_init(|| {
+        scraper::Selector::parse("input[type=hidden]").expect("static input selector")
+    })
+}
 
 /// Encode a JSON value using the native messaging wire protocol:
 /// 4-byte little-endian length prefix + JSON bytes.
-pub fn encode_native_message(value: &serde_json::Value) -> Vec<u8> {
-    let json = serde_json::to_vec(value).expect("serialize json");
+pub fn encode_native_message(value: &serde_json::Value) -> Result<Vec<u8>> {
+    let json = serde_json::to_vec(value)?;
     let len = json.len() as u32;
     let mut buf = Vec::with_capacity(4 + json.len());
     buf.extend_from_slice(&len.to_le_bytes());
     buf.extend_from_slice(&json);
-    buf
+    Ok(buf)
 }
 
 /// Decode a native messaging response: 4-byte LE length + JSON.
 pub fn decode_native_message(data: &[u8]) -> Result<serde_json::Value> {
     if data.len() < 4 {
-        return Err(PluginError::Auth("helper response too short".into()));
+        return Err(PluginError::Auth("Helper response too short".into()));
     }
     let len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
     if data.len() < 4 + len {
         return Err(PluginError::Auth(format!(
-            "helper response truncated: expected {} bytes, got {}",
+            "Helper response truncated: expected {} bytes, got {}",
             len,
             data.len() - 4
         )));
     }
     serde_json::from_slice(&data[4..4 + len])
-        .map_err(|e| PluginError::Auth(format!("helper response JSON: {}", e)))
+        .map_err(|e| PluginError::Auth(format!("Helper response JSON: {}", e)))
 }
 
-/// Send a request to the helper helper binary and read the response.
+/// Send a request to the helper binary and read the response.
 pub fn call_helper(helper_path: &Path, request: &serde_json::Value) -> Result<serde_json::Value> {
     let mut child = Command::new(helper_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| PluginError::Auth(format!("spawn helper helper: {}", e)))?;
+        .map_err(|e| PluginError::Auth(format!("Failed to spawn helper: {}", e)))?;
 
-    let encoded = encode_native_message(request);
+    let encoded = encode_native_message(request)?;
     if let Some(stdin) = child.stdin.as_mut() {
         stdin.write_all(&encoded)?;
     }
@@ -50,12 +63,12 @@ pub fn call_helper(helper_path: &Path, request: &serde_json::Value) -> Result<se
     let output = child.wait_with_output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(PluginError::Auth(format!("helper helper failed: {}", stderr)));
+        return Err(PluginError::Auth(format!("Helper failed: {}", stderr)));
     }
     decode_native_message(&output.stdout)
 }
 
-/// Parse session cookies from the helper helper response.
+/// Parse session cookies from the helper response.
 /// Format: newline-delimited "key=value" pairs.
 pub fn parse_session_cookies(raw: &str) -> Vec<SessionCookie> {
     raw.lines()
@@ -82,35 +95,30 @@ pub fn parse_saml_response_form(html: &str) -> Result<(String, String, Option<St
 
 fn parse_saml_form(html: &str, field_name: &str) -> Result<(String, String, Option<String>)> {
     let doc = scraper::Html::parse_document(html);
-    let form_sel = scraper::Selector::parse("form").unwrap();
-    let input_sel = scraper::Selector::parse("input[type=hidden]").unwrap();
-
-    let form = doc
-        .select(&form_sel)
-        .next()
-        .ok_or_else(|| PluginError::Auth(format!("no form found in HTML for {}", field_name)))?;
-    let action = form
-        .value()
-        .attr("action")
-        .ok_or_else(|| PluginError::Auth("form has no action attribute".into()))?
-        .to_string();
-
-    let mut saml_value = None;
-    let mut relay_state = None;
-    for input in form.select(&input_sel) {
-        match input.value().attr("name") {
-            Some(name) if name == field_name => {
-                saml_value = input.value().attr("value").map(String::from);
+    // Pages can have multiple forms (search, language switcher, etc.).
+    // Find the first form that contains a hidden input with the target name.
+    for form in doc.select(form_selector()) {
+        let mut saml_value = None;
+        let mut relay_state = None;
+        for input in form.select(hidden_input_selector()) {
+            match input.value().attr("name") {
+                Some(name) if name == field_name => {
+                    saml_value = input.value().attr("value").map(String::from);
+                }
+                Some("RelayState") => {
+                    relay_state = input.value().attr("value").map(String::from);
+                }
+                _ => {}
             }
-            Some("RelayState") => {
-                relay_state = input.value().attr("value").map(String::from);
-            }
-            _ => {}
+        }
+        if let Some(value) = saml_value {
+            let action = form.value().attr("action").ok_or_else(|| {
+                PluginError::Auth("SAML form has no action attribute".into())
+            })?;
+            return Ok((action.to_string(), value, relay_state));
         }
     }
-    let saml_value = saml_value
-        .ok_or_else(|| PluginError::Auth(format!("no {} in form", field_name)))?;
-    Ok((action, saml_value, relay_state))
+    Err(PluginError::Auth(format!("No {} form found in HTML", field_name)))
 }
 
 /// Extract the host component from a URL.
@@ -129,7 +137,7 @@ mod tests {
     #[test]
     fn encode_decode_roundtrip() {
         let val = serde_json::json!({"hello": "world"});
-        let encoded = encode_native_message(&val);
+        let encoded = encode_native_message(&val).unwrap();
         let decoded = decode_native_message(&encoded).unwrap();
         assert_eq!(decoded["hello"], "world");
     }
@@ -193,6 +201,22 @@ mod tests {
     fn parse_login_form_no_saml() {
         let html = r#"<form action="https://x"><input type="hidden" name="other" value="v"/></form>"#;
         assert!(parse_login_form(html).is_err());
+    }
+
+    #[test]
+    fn parse_login_form_skips_non_saml_forms() {
+        // Real pages have search forms, language selectors, etc. before
+        // the SAML form — must skip them.
+        let html = r#"<html><body>
+            <form action="/search"><input type="text" name="q"/></form>
+            <form action="/login"><input type="hidden" name="csrf" value="x"/></form>
+            <form action="https://idp.example.com/saml">
+                <input type="hidden" name="SAMLRequest" value="real"/>
+            </form>
+        </body></html>"#;
+        let (action, saml, _) = parse_login_form(html).unwrap();
+        assert_eq!(action, "https://idp.example.com/saml");
+        assert_eq!(saml, "real");
     }
 
     #[test]

@@ -13,7 +13,7 @@ pub fn run(task_filter: Option<&str>, config_path: &Path, auth_dir: &Path) -> Re
     let config = PluginConfig::load(config_path)?;
     let provider = auth::create_provider(&config);
     let mut client = JiraClient::new(config.clone(), provider.as_ref(), auth_dir);
-    let discovered = client.discover();
+    let discovered = client.discover()?;
 
     let mut stdin_buf = String::new();
     std::io::stdin().read_to_string(&mut stdin_buf)?;

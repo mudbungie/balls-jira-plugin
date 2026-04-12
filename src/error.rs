@@ -14,11 +14,7 @@ pub enum PluginError {
     Config(String),
     #[error("jira api {status}: {body}")]
     JiraApi { status: u16, body: String },
-    #[error("mapping: {0}")]
-    #[allow(dead_code)]
-    Mapping(String),
     #[error("{0}")]
-    #[allow(dead_code)]
     Other(String),
 }
 
@@ -59,12 +55,6 @@ mod tests {
             body: "not found".into(),
         };
         assert_eq!(e.to_string(), "jira api 404: not found");
-    }
-
-    #[test]
-    fn mapping_error_display() {
-        let e = PluginError::Mapping("unknown status".into());
-        assert_eq!(e.to_string(), "mapping: unknown status");
     }
 
     #[test]

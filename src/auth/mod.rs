@@ -1,5 +1,6 @@
 pub mod device_auth;
 pub mod oauth;
+pub mod oauth_flow;
 pub mod pat;
 pub mod saml;
 pub mod tokens;
