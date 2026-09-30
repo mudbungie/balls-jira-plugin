@@ -1,25 +1,3 @@
 #!/usr/bin/env bash
-# Git pre-commit hook for balls-plugin-jira.
-#
-# Blocks any commit that:
-#   1. Has clippy warnings
-#   2. Contains a Rust source file >= 300 lines
-#   3. Tests fail
-#
-# To install: scripts/install-hooks.sh
-
-set -euo pipefail
-
-ROOT="$(git rev-parse --show-toplevel)"
-cd "$ROOT"
-
-echo "pre-commit: clippy..."
-cargo clippy --all-targets -- -D warnings 2>&1
-
-echo "pre-commit: line lengths..."
-"$ROOT/scripts/check-line-lengths.sh"
-
-echo "pre-commit: tests..."
-cargo test --quiet 2>&1
-
-echo "pre-commit: OK."
+# The gate is bl-gate (userconf, on PATH); see AGENTS.md "The gate". Installed by scripts/install-hooks.sh.
+exec bl-gate "$@"

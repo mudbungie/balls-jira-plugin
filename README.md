@@ -125,17 +125,9 @@ balls-plugin-jira sync       [--task ID] --config PATH --auth-dir DIR
 
 ```bash
 make test      # run the test suite
-make check     # test + clippy (deny warnings) + line-length check + coverage
+make check     # the complete gate: test + clippy (deny warnings) + line-length check + coverage floor
 ```
 
-`make check` requires `cargo-tarpaulin` for the coverage gate:
-
-```bash
-cargo install cargo-tarpaulin
-```
-
-Pre-commit hooks that block commits with clippy warnings or source files ≥ 300 lines can be installed via:
-
-```bash
-scripts/install-hooks.sh
-```
+The pre-commit hook (`scripts/pre-commit`, seated by `scripts/install-hooks.sh`)
+does not run `make check` locally: it delegates to `bl-gate`, which has the
+noodlezoo builder run it and sign a verdict. See AGENTS.md "The gate".

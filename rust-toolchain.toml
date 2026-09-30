@@ -1,0 +1,9 @@
+# Pinned toolchain for every cargo invocation in this repo. The gate runs on
+# the noodlezoo builder, whose image has NO default toolchain: this file is
+# what rustup resolves there, and `rustc -V` from it is the gate half of every
+# bl-speculate verdict key (AGENTS.md "The gate"), so the pin must equal the
+# laptop's rustc for a verdict to be recognised. Bump it as a deliberate,
+# isolated change.
+[toolchain]
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]
